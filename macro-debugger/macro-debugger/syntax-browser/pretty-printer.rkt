@@ -12,10 +12,12 @@
 ;; pretty-print-syntax : syntax port partition number SuffixOption hasheq number bool
 ;;                    -> range%
 (define (pretty-print-syntax stx port
-                             primary-partition colors suffix-option styles columns abbrev?)
+                             primary-partition colors suffix-option styles columns abbrev?
+                             #:taint-icons? [taint-icons? #f])
   (define range-builder (new range-builder%))
   (define-values (datum ht:flat=>stx ht:stx=>flat)
-    (syntax->datum/tables stx primary-partition colors suffix-option abbrev?))
+    (syntax->datum/tables stx primary-partition colors suffix-option abbrev?
+                          #:taint-icons? taint-icons?))
   (define identifier-list
     (filter identifier? (hash-map ht:stx=>flat (lambda (k v) k))))
   (define (flat=>stx obj)

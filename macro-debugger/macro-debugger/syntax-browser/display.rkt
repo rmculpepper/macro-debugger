@@ -10,7 +10,9 @@
          macro-debugger/syntax-browser/interfaces
          "prefs.rkt"
          "util.rkt"
-         "../util/logger.rkt")
+         "../util/logger.rkt"
+         (only-in "icons/lock.rkt" lock-icon-snip%)
+         (only-in "icons/tainted.rkt" tainted-icon-snip%))
 (provide print-syntax-to-editor
          code-style)
 
@@ -36,7 +38,8 @@
                            (send/i config config<%> get-suffix-option)
                            (send config get-pretty-styles)
                            columns
-                           (send config get-pretty-abbrev?))))
+                           (send config get-pretty-abbrev?)
+                           #:taint-icons? (and (send/i config config<%> get-taint-icons) #t))))
   (define output-string (get-output-string output-port))
   (define output-length (sub1 (string-length output-string))) ;; skip final newline
   (log-macro-stepper-debug "size of pretty-printed text: ~s" output-length)
@@ -45,7 +48,9 @@
   (with-unlock text
     (with-log-time "inserting pretty-printed text"
       (uninterruptible
-       (send text insert output-length output-string insertion-point)))
+       (if (replace-taint-icons? config text)
+           (insert-string/replace-icons text output-string output-length insertion-point)
+           (send text insert output-length output-string insertion-point))))
     (new display%
          (text text)
          (controller controller)
@@ -53,6 +58,16 @@
          (range range)
          (start-position insertion-point)
          (end-position (+ insertion-point output-length)))))
+
+(define (replace-taint-icons? config text)
+  (let loop ([mode (send config get-taint-icons)])
+    (case mode
+      [(snip) #t]
+      [(char)
+       (define font (send (code-style text #f) get-font))
+       (not (for/and ([c (in-list '(#\🔒 #\🔓 #\💥))])
+              (send font screen-glyph-exists? c)))]
+      [else #f])))
 
 ;; display%
 ;; Note: must call refresh method to finish styling.
@@ -285,6 +300,54 @@
           ((#\{) 
            (string-set! string start #\{)
            (string-set! string (sub1 end) #\})))))))
+
+;; cleanse-icons and fixup-icons handle the case where the current
+;; font cannot display the unicode characters used to indicate armed
+;; and tainted syntax (LOCK, OPEN LOCK, and COLLISION SYMBOL).
+
+;; cleanse-icons : String -> String
+(define (cleanse-icons str0)
+  (define str (string-copy str0))
+  (for ([c (in-string str)] [i (in-naturals)])
+    (when (member c '(#\🔒 #\🔓 #\💥)) ;; LOCK, OPEN LOCK, COLLISION SYMBOL
+      (string-set! str i #\_)))
+  str)
+
+;; fixup-icons : String Text Nat -> Void
+(define (fixup-icons str text start)
+  (define (replace pos snip)
+    (send text set-position (add1 pos))
+    (send text insert snip)
+    (send text delete (+ pos 0) (+ pos 1) #f))
+  (for ([c (in-string str)] [i (in-naturals start)])
+    (when (member c '(#\🔒 #\🔓)) ;; LOCK, OPEN LOCK
+      (replace i (new lock-icon-snip%)))
+    (when (member c '(#\💥)) ;; COLLISION SYMBOL
+      (replace i (new tainted-icon-snip%)))))
+
+;; Approach 1: fixup string after insertion -- doesn't work, sometimes get spurious newlines after inserted icon snips.
+
+;; Approach 2: insert in pieces
+
+(define (insert-string/replace-icons text s len insertion-point)
+  (define (start-loop start) (loop start start))
+  (define (loop start pos)
+    (cond [(< pos len)
+           (define c (string-ref s pos))
+           (cond [(member c '(#\🔒 #\🔓)) ;; LOCK, OPEN LOCK
+                  (flush start pos)
+                  (send text insert (new lock-icon-snip%) (+ insertion-point pos))
+                  (start-loop (add1 pos))]
+                 [(member c '(#\💥)) ;; COLLISION SYMBOL
+                  (flush start pos)
+                  (send text insert (new tainted-icon-snip%) (+ insertion-point pos))
+                  (start-loop (add1 pos))]
+                 [else (loop start (add1 pos))])]
+          [else (flush start pos)]))
+  (define (flush start end)
+    (when (< start end)
+      (send text insert (substring s start end) (+ insertion-point start))))
+  (start-loop 0))
 
 (define (open-output-string/count-lines)
   (let ([os (open-output-string)])
